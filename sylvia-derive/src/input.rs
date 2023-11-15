@@ -16,7 +16,7 @@ use crate::message::{
     StructMessage,
 };
 use crate::multitest::{MultitestHelpers, TraitMultitestHelpers};
-use crate::parser::{ContractArgs, ContractErrorAttr, Custom, MsgType, OverrideEntryPoints};
+use crate::parser::{ContractArgs, ContractErrorAttr, Custom, MsgType, OverrideEntryPoints, ContractTypeAttr};
 use crate::remote::Remote;
 use crate::variant_descs::AsVariantDescs;
 
@@ -31,6 +31,7 @@ pub struct TraitInput<'a> {
 pub struct ImplInput<'a> {
     attributes: &'a ContractArgs,
     error: Type,
+    contract_type: Type,
     item: &'a ItemImpl,
     generics: Vec<&'a GenericParam>,
     custom: Custom<'a>,
@@ -133,6 +134,22 @@ impl<'a> ImplInput<'a> {
 
         let generics = item.generics.params.iter().collect();
 
+        // This allows to specify if the contract is an App or an adapter
+        let contract_type = item
+            .attrs
+            .iter()
+            .find(|attr| attr.path.is_ident("contract_type"))
+            .and_then(
+                |attr| match ContractTypeAttr::parse.parse2(attr.tokens.clone()) {
+                    Ok(error) => Some(error.contract_type),
+                    Err(err) => {
+                        emit_error!(attr.span(), err);
+                        None
+                    }
+                },
+            )
+            .unwrap_or_else(|| panic!("Contract Type has to be defined"));
+
         let error = item
             .attrs
             .iter()
@@ -157,6 +174,7 @@ impl<'a> ImplInput<'a> {
             item,
             generics,
             error,
+            contract_type,
             custom,
             override_entry_points,
             interfaces,
@@ -260,12 +278,12 @@ impl<'a> ImplInput<'a> {
     }
 
     fn emit_struct_msg(&self, msg_ty: MsgType) -> TokenStream {
-        StructMessage::new(self.item, msg_ty, &self.generics, &self.custom)
+        StructMessage::new(self.item, msg_ty, &self.generics, &self.contract_type, &self.error, &self.custom)
             .map_or(quote! {}, |msg| msg.emit())
     }
 
     fn emit_enum_msg(&self, msg_ty: MsgType) -> TokenStream {
-        ContractEnumMessage::new(self.item, msg_ty, &self.generics, &self.error, &self.custom)
+        ContractEnumMessage::new(self.item, msg_ty, &self.generics, &self.contract_type, &self.error, &self.custom)
             .emit()
     }
 

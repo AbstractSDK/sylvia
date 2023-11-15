@@ -74,7 +74,8 @@ impl Fold for StripInput {
             .into_iter()
             .filter(|attr| {
                 !(attr.path.is_ident("messages")
-                    || attr.path.is_ident("error")
+                || attr.path.is_ident("error")
+                || attr.path.is_ident("contract_type")
                     || sylvia_attribute(attr).is_some())
             })
             .collect();

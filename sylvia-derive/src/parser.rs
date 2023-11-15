@@ -1,4 +1,4 @@
-use proc_macro2::{Punct, TokenStream};
+use proc_macro2::{Punct, TokenStream, Span};
 use proc_macro_error::emit_error;
 use quote::quote;
 use syn::fold::Fold;
@@ -87,8 +87,16 @@ pub enum MsgType {
 pub enum MsgAttr {
     Exec,
     Query { resp_type: Option<Ident> },
-    Instantiate { name: Ident },
-    Migrate { name: Ident },
+    Instantiate { 
+        name: Ident,
+        app_msg_name: Ident,
+        abstract_name: Path
+    },
+    Migrate { 
+        name: Ident,
+        app_msg_name: Ident,
+        abstract_name: Path 
+    },
     Reply,
 }
 
@@ -184,6 +192,40 @@ impl MsgType {
         }
     }
 
+    pub fn emit_impl_name(&self) -> Type {
+        match self {
+            MsgType::Exec => parse_quote! { ImplExecMsg },
+            MsgType::Query => parse_quote! { ImplQueryMsg },
+            MsgType::Instantiate => todo!(),
+            MsgType::Migrate => todo!(),
+            MsgType::Reply => todo!(),
+            MsgType::Sudo => todo!(),
+        }
+    }
+
+    pub fn emit_abstract_name(&self) -> Result<Path> {
+        match self {
+            MsgType::Exec => syn::parse_str("::BaseExecuteMsg"),
+            MsgType::Query => syn::parse_str("::BaseQueryMsg"),
+            MsgType::Instantiate => syn::parse_str("::BaseInstantiateMsg"),
+            MsgType::Migrate => syn::parse_str("::BaseMigrateMsg"),
+            MsgType::Reply => todo!(),
+            MsgType::Sudo => todo!(),
+        }
+    }
+
+    pub fn emit_abstract_ctx(&self) -> Result<Path> {
+        match self {
+            MsgType::Exec => syn::parse_str("::ExecuteCtx"),
+            MsgType::Query => syn::parse_str("::QueryCtx"),
+            MsgType::Instantiate => todo!(),
+            MsgType::Migrate => todo!(),
+            MsgType::Reply => todo!(),
+            MsgType::Sudo => todo!(),
+        }
+    }
+
+
     pub fn as_accessor_name(&self, is_wrapper: bool) -> Option<Type> {
         match self {
             MsgType::Exec if is_wrapper => Some(parse_quote! { ContractExec }),
@@ -241,11 +283,21 @@ impl Parse for MsgAttr {
         } else if ty == "query" {
             Self::parse_query(content)
         } else if ty == "instantiate" {
-            let name = Ident::new("InstantiateMsg", content.span());
-            Ok(Self::Instantiate { name })
+            // This is the message that the client expects
+            let app_msg_name = Ident::new("ImplInstantiateMsg", content.span());
+            // This is the message that the entry_point expects
+            let name = Ident::new("InstantiateMsg", Span::call_site());
+            // This is the abstract base msg - This needs to depend on the app type
+            let abstract_name: Path = MsgType::Instantiate.emit_abstract_name()?;
+            Ok(Self::Instantiate { name, app_msg_name, abstract_name })
         } else if ty == "migrate" {
-            let name = Ident::new("MigrateMsg", content.span());
-            Ok(Self::Migrate { name })
+            // This is the message that the client expects
+            let app_msg_name = Ident::new("ImplMigrateMsg", content.span());
+            // This is the message that the entry_point expects
+            let name = Ident::new("MigrateMsg", Span::call_site());
+            // This is the abstract base msg - This needs to depend on the app type
+            let abstract_name: Path = MsgType::Migrate.emit_abstract_name()?;
+            Ok(Self::Migrate { name, app_msg_name, abstract_name })
         } else if ty == "reply" {
             Ok(Self::Reply)
         } else {
@@ -272,6 +324,24 @@ impl Parse for ContractErrorAttr {
         content.parse().map(|error| Self { error })
     }
 }
+
+#[derive(Debug)]
+pub struct ContractTypeAttr {
+    pub contract_type: Type,
+}
+
+#[cfg(not(tarpaulin_include))]
+// False negative. It is being called in closure
+impl Parse for ContractTypeAttr {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let content;
+        parenthesized!(content in input);
+
+        content.parse().map(|contract_type| Self { contract_type })
+    }
+}
+
+
 
 #[derive(Debug)]
 pub struct Customs {

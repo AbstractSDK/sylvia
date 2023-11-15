@@ -33,9 +33,12 @@ pub struct StructMessage<'a> {
     unused_generics: Vec<&'a GenericParam>,
     wheres: Vec<&'a WherePredicate>,
     full_where: Option<&'a WhereClause>,
-    result: &'a ReturnType,
+    msg_ty: MsgType,
+    resp_type: Type,
+    error: &'a Type,
     msg_attr: MsgAttr,
     custom: &'a Custom<'a>,
+    contract_msg_types: &'a Type, // Saves the messages types around the actual type
 }
 
 impl<'a> StructMessage<'a> {
@@ -44,6 +47,8 @@ impl<'a> StructMessage<'a> {
         source: &'a ItemImpl,
         ty: MsgType,
         generics: &'a [&'a GenericParam],
+        contract_msg_types: &'a Type,
+        error: &'a Type,
         custom: &'a Custom,
     ) -> Option<StructMessage<'a>> {
         let mut generics_checker = CheckGenerics::new(generics);
@@ -54,6 +59,10 @@ impl<'a> StructMessage<'a> {
         let Some((method, msg_attr)) = parsed else {
             return None;
         };
+
+        let resp_type = custom
+            .msg()
+            .unwrap_or_else(Custom::default_type);
 
         let function_name = &method.sig.ident;
         let fields = process_fields(&method.sig, &mut generics_checker);
@@ -68,9 +77,12 @@ impl<'a> StructMessage<'a> {
             unused_generics,
             wheres,
             full_where: source.generics.where_clause.as_ref(),
-            result: &method.sig.output,
             msg_attr,
+            msg_ty: ty,
+            resp_type,
+            error,
             custom,
+            contract_msg_types
         })
     }
 
@@ -78,8 +90,8 @@ impl<'a> StructMessage<'a> {
         use MsgAttr::*;
 
         match &self.msg_attr {
-            Instantiate { name } => self.emit_struct(name),
-            Migrate { name } => self.emit_struct(name),
+            Instantiate { name, app_msg_name, abstract_name } => self.emit_struct(name, app_msg_name, abstract_name),
+            Migrate { name, app_msg_name, abstract_name } => self.emit_struct(name, app_msg_name, abstract_name),
             _ => {
                 emit_error!(Span::mixed_site(), "Invalid message type");
                 quote! {}
@@ -87,7 +99,7 @@ impl<'a> StructMessage<'a> {
         }
     }
 
-    pub fn emit_struct(&self, name: &Ident) -> TokenStream {
+    pub fn emit_struct(&self, name: &Ident, app_msg_name:&Ident, abstract_name: &Path) -> TokenStream {
         let sylvia = crate_module();
 
         let Self {
@@ -98,14 +110,19 @@ impl<'a> StructMessage<'a> {
             unused_generics,
             wheres,
             full_where,
-            result,
             msg_attr,
+            msg_ty,
+            resp_type,
+            error,
             custom,
+            contract_msg_types
         } = self;
 
         let ctx_type = msg_attr
             .msg_type()
             .emit_ctx_type(&custom.query_or_default());
+        let ret_type = msg_ty.emit_result_type(resp_type, error);
+
         let fields_names: Vec<_> = fields.iter().map(MsgField::name).collect();
         let parameters = fields.iter().map(|field| {
             let name = field.name;
@@ -121,23 +138,37 @@ impl<'a> StructMessage<'a> {
         #[cfg(not(tarpaulin_include))]
         {
             quote! {
+                // This is the InstantiateMsg for the contract
                 #[allow(clippy::derive_partial_eq_without_eq)]
                 #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema)]
                 #[serde(rename_all="snake_case")]
                 pub struct #name #generics {
+                    pub base: <#contract_msg_types as ::abstract_app::better_sdk::sdk::SylviaAbstractContract> #abstract_name,
+                    pub module: #app_msg_name #generics
+                }
+
+                // This is the InstantiateMsg for the app
+                #[allow(clippy::derive_partial_eq_without_eq)]
+                #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema)]
+                #[serde(rename_all="snake_case")]
+                pub struct #app_msg_name #generics {
                     #(pub #fields,)*
                 }
 
                 impl #generics #name #generics #where_clause {
-                    pub fn new(#(#parameters,)*) -> Self {
-                        Self { #(#fields_names,)* }
-                    }
 
                     pub fn dispatch #unused_generics(self, contract: &#contract_type, ctx: #ctx_type)
-                        #result #full_where
+                       -> #ret_type #full_where
                     {
-                        let Self { #(#fields_names,)* } = self;
-                        contract.#function_name(Into::into(ctx), #(#fields_names,)*).map_err(Into::into)
+                        
+                        let Self { base, module} = self;
+
+                        let #app_msg_name { #(#fields_names,)* } = module;
+
+                        let mut result_context = contract.#function_name(TryInto::try_into((ctx, base))?, #(#fields_names,)*)?;
+                        // This is a general trait that can be implemented by App or Adapter
+                        use ::abstract_app::better_sdk::execution_stack::ResponseGenerator;
+                        result_context.generate_response().map_err(Into::into)
                     }
                 }
             }
@@ -250,7 +281,7 @@ impl<'a> EnumMessage<'a> {
             .collect();
         msgs.sort();
         let msgs_cnt = msgs.len();
-        let variants_constructors = variants.iter().map(MsgVariant::emit_variants_constructors);
+        let variants_constructors = variants.iter().map(|v| v.emit_variants_constructors(msg_ty));
         let variants = variants.iter().map(MsgVariant::emit);
         let where_clause = if !wheres.is_empty() {
             quote! {
@@ -332,7 +363,7 @@ impl<'a> EnumMessage<'a> {
 
                 impl #generics #unique_enum_name #generics #where_clause {
                     pub fn dispatch<C: #trait_name #all_generics, #(#unused_generics,)*>(self, contract: &C, ctx: #ctx_type)
-                        -> #dispatch_type #full_where
+                    -> #dispatch_type #full_where
                     {
                         use #unique_enum_name::*;
 
@@ -359,6 +390,7 @@ pub struct ContractEnumMessage<'a> {
     error: &'a Type,
     custom: &'a Custom<'a>,
     where_clause: &'a Option<WhereClause>,
+    contract_msg_types: &'a Type, // Saves the messages types around the actual type
 }
 
 impl<'a> ContractEnumMessage<'a> {
@@ -366,6 +398,7 @@ impl<'a> ContractEnumMessage<'a> {
         source: &'a ItemImpl,
         msg_ty: MsgType,
         generics: &'a [&'a GenericParam],
+        contract_msg_types: &'a Type,
         error: &'a Type,
         custom: &'a Custom,
     ) -> Self {
@@ -379,6 +412,7 @@ impl<'a> ContractEnumMessage<'a> {
             error,
             custom,
             where_clause,
+            contract_msg_types
         }
     }
 
@@ -392,10 +426,14 @@ impl<'a> ContractEnumMessage<'a> {
             error,
             custom,
             where_clause,
+            contract_msg_types,
             ..
         } = self;
 
         let enum_name = msg_ty.emit_msg_name(false);
+        let app_enum_name = msg_ty.emit_impl_name();
+        let abstract_name = msg_ty.emit_abstract_name().unwrap();
+        let abstract_ctx = msg_ty.emit_abstract_ctx().unwrap();
         let match_arms = variants.emit_dispatch_legs();
         let unused_generics = variants.unused_generics();
         let unused_generics = emit_bracketed_generics(unused_generics);
@@ -405,39 +443,67 @@ impl<'a> ContractEnumMessage<'a> {
         let mut variant_names = variants.as_names_snake_cased();
         variant_names.sort();
         let variants_cnt = variant_names.len();
-        let variants_constructors = variants.emit_constructors();
+        let variants_constructors = variants.emit_constructors(msg_ty);
         let variants = variants.emit();
 
         let ctx_type = msg_ty.emit_ctx_type(&custom.query_or_default());
         let ret_type = msg_ty.emit_result_type(&custom.msg_or_default(), error);
 
-        let derive_query = match msg_ty {
-            MsgType::Query => quote! { #sylvia ::cw_schema::QueryResponses },
-            _ => quote! {},
+        let (derive_query, query_nested) = match msg_ty {
+            MsgType::Query => (quote! { #sylvia ::cw_schema::QueryResponses }, quote! { #[query_responses(nested)] }),
+            _ => (quote! {},quote! {})
         };
 
         let ep_name = msg_ty.emit_ep_name();
         let messages_fn_name = Ident::new(&format!("{}_messages", ep_name), contract.span());
 
+        // panic!("{}", quote!( pub enum #app_enum_name #used_generics {
+        //     #(#variants,)*
+        // }));
         #[cfg(not(tarpaulin_include))]
         {
             quote! {
+
+                // This is the InstantiateMsg for the contract
+                #[allow(clippy::derive_partial_eq_without_eq)]
+                #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema, #derive_query )]
+                #query_nested
+                #[serde(rename_all="snake_case")]
+                pub enum #enum_name #used_generics {
+                    Module(#app_enum_name #used_generics),
+                    Base(<#contract_msg_types as ::abstract_app::better_sdk::sdk::SylviaAbstractContract> #abstract_name)
+                }
+
+                // This is the InstantiateMsg for the app
                 #[allow(clippy::derive_partial_eq_without_eq)]
                 #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema, #derive_query )]
                 #[serde(rename_all="snake_case")]
-                pub enum #enum_name #used_generics {
+                pub enum #app_enum_name #used_generics {
                     #(#variants,)*
                 }
 
                 impl #used_generics #enum_name #used_generics {
                     pub fn dispatch #unused_generics (self, contract: &#contract, ctx: #ctx_type) -> #ret_type #where_clause {
-                        use #enum_name::*;
 
-                        match self {
-                            #(#match_arms,)*
-                        }
+                        let ctx: <#contract_msg_types as ::abstract_app::better_sdk::sdk::SylviaAbstractContract> #abstract_ctx<'_> = Into::into(ctx);
+                        let resp = match self{
+                            #enum_name ::Module(module_msg) => {
+                                use #app_enum_name::*; // use #enum_name::*;
+                                match module_msg {
+                                    #(#match_arms,)*
+                                }
+                            },
+                            #enum_name ::Base(base_msg) => {
+                                use abstract_app::better_sdk::execution_stack::ResponseGenerator;
+                                let mut result_ctx = ctx._base(base_msg)?;
+                                result_ctx.generate_response()
+                            }
+                        }?;
+                
+                        Ok(resp)
+
+
                     }
-
                     #(#variants_constructors)*
                 }
 
@@ -565,12 +631,12 @@ impl<'a> MsgVariant<'a> {
             Exec => quote! {
                 #name {
                     #(#fields,)*
-                } => contract.#function_name(Into::into(ctx), #(#args),*).map_err(Into::into)
+                } => contract.#function_name(ctx, #(#args),*).map_err(Into::into)
             },
             Query => quote! {
                 #name {
                     #(#fields,)*
-                } => #sylvia ::cw_std::to_binary(&contract.#function_name(Into::into(ctx), #(#args),*)?).map_err(Into::into)
+                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(ctx, #(#args),*)?).map_err(Into::into)
             },
             Instantiate | Migrate | Reply | Sudo => {
                 emit_error!(name.span(), "Instantiation, Reply, Migrate and Sudo messages not supported on traits, they should be defined on contracts directly");
@@ -580,7 +646,7 @@ impl<'a> MsgVariant<'a> {
     }
 
     /// Emits variants constructors. Constructors names are variants names in snake_case.
-    pub fn emit_variants_constructors(&self) -> TokenStream {
+    pub fn emit_variants_constructors(&self, msg_type: &'a MsgType) -> TokenStream {
         let Self { name, fields, .. } = self;
 
         let method_name = name.to_string().to_case(Case::Snake);
@@ -593,9 +659,11 @@ impl<'a> MsgVariant<'a> {
         });
         let arguments = fields.iter().map(|field| field.name);
 
+        let impl_name = msg_type.emit_impl_name();
+
         quote! {
             pub fn #method_name( #(#parameters),*) -> Self {
-                Self :: #name { #(#arguments),* }
+                Self::Module(#impl_name :: #name { #(#arguments),* })
             }
         }
     }
@@ -1130,10 +1198,10 @@ where
             .collect()
     }
 
-    pub fn emit_constructors(&self) -> impl Iterator<Item = TokenStream> + '_ {
+    pub fn emit_constructors(&self, msg_ty: &'a MsgType) -> impl Iterator<Item = TokenStream> + '_ {
         self.variants
             .iter()
-            .map(MsgVariant::emit_variants_constructors)
+            .map(|v| v.emit_variants_constructors(msg_ty))
     }
 
     pub fn emit(&self) -> impl Iterator<Item = TokenStream> + '_ {
