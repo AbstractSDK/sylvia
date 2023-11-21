@@ -449,61 +449,33 @@ impl<'a> ContractEnumMessage<'a> {
         let ctx_type = msg_ty.emit_ctx_type(&custom.query_or_default());
         let ret_type = msg_ty.emit_result_type(&custom.msg_or_default(), error);
 
-        let (derive_query, query_nested) = match msg_ty {
-            MsgType::Query => (quote! { #sylvia ::cw_schema::QueryResponses }, quote! { #[query_responses(nested)] }),
-            _ => (quote! {},quote! {})
+        let derive_query = match msg_ty {
+            MsgType::Query => quote! { #sylvia ::cw_schema::QueryResponses },
+            _ => quote! {},
         };
 
         let ep_name = msg_ty.emit_ep_name();
         let messages_fn_name = Ident::new(&format!("{}_messages", ep_name), contract.span());
 
-        // panic!("{}", quote!( pub enum #app_enum_name #used_generics {
-        //     #(#variants,)*
-        // }));
         #[cfg(not(tarpaulin_include))]
         {
             quote! {
-
-                // This is the InstantiateMsg for the contract
                 #[allow(clippy::derive_partial_eq_without_eq)]
                 #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema, #derive_query )]
-                #query_nested
                 #[serde(rename_all="snake_case")]
                 pub enum #enum_name #used_generics {
-                    Module(#app_enum_name #used_generics),
-                    Base(<#contract_msg_types as ::abstract_app::better_sdk::sdk::SylviaAbstractContract> #abstract_name)
-                }
-
-                // This is the InstantiateMsg for the app
-                #[allow(clippy::derive_partial_eq_without_eq)]
-                #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema, #derive_query )]
-                #[serde(rename_all="snake_case")]
-                pub enum #app_enum_name #used_generics {
                     #(#variants,)*
                 }
 
                 impl #used_generics #enum_name #used_generics {
                     pub fn dispatch #unused_generics (self, contract: &#contract, ctx: #ctx_type) -> #ret_type #where_clause {
+                        use #enum_name::*;
 
-                        let ctx: <#contract_msg_types as ::abstract_app::better_sdk::sdk::SylviaAbstractContract> #abstract_ctx<'_> = Into::into(ctx);
-                        let resp = match self{
-                            #enum_name ::Module(module_msg) => {
-                                use #app_enum_name::*; // use #enum_name::*;
-                                match module_msg {
-                                    #(#match_arms,)*
-                                }
-                            },
-                            #enum_name ::Base(base_msg) => {
-                                use abstract_app::better_sdk::execution_stack::ResponseGenerator;
-                                let mut result_ctx = ctx._base(base_msg)?;
-                                result_ctx.generate_response()
-                            }
-                        }?;
-                
-                        Ok(resp)
-
-
+                        match self {
+                            #(#match_arms,)*
+                        }
                     }
+
                     #(#variants_constructors)*
                 }
 
@@ -631,12 +603,12 @@ impl<'a> MsgVariant<'a> {
             Exec => quote! {
                 #name {
                     #(#fields,)*
-                } => contract.#function_name(ctx, #(#args),*).map_err(Into::into)
+                } => contract.#function_name(Into::into(ctx), #(#args),*).map_err(Into::into)
             },
             Query => quote! {
                 #name {
                     #(#fields,)*
-                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(ctx, #(#args),*)?).map_err(Into::into)
+                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(Into::into(ctx), #(#args),*)?).map_err(Into::into)
             },
             Instantiate | Migrate | Reply | Sudo => {
                 emit_error!(name.span(), "Instantiation, Reply, Migrate and Sudo messages not supported on traits, they should be defined on contracts directly");
@@ -663,7 +635,7 @@ impl<'a> MsgVariant<'a> {
 
         quote! {
             pub fn #method_name( #(#parameters),*) -> Self {
-                Self::Module(#impl_name :: #name { #(#arguments),* })
+                Self :: #name { #(#arguments),* }
             }
         }
     }
