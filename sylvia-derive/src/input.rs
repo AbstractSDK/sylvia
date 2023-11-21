@@ -16,7 +16,9 @@ use crate::message::{
     StructMessage,
 };
 use crate::multitest::{MultitestHelpers, TraitMultitestHelpers};
-use crate::parser::{ContractArgs, ContractErrorAttr, Custom, MsgType, OverrideEntryPoints, ContractTypeAttr};
+use crate::parser::{
+    ContractArgs, ContractErrorAttr, ContractTypeAttr, Custom, MsgType, OverrideEntryPoints,
+};
 use crate::remote::Remote;
 use crate::variant_descs::AsVariantDescs;
 
@@ -278,12 +280,19 @@ impl<'a> ImplInput<'a> {
     }
 
     fn emit_struct_msg(&self, msg_ty: MsgType) -> TokenStream {
-        StructMessage::new(self.item, msg_ty, &self.generics, &self.contract_type, &self.error, &self.custom)
-            .map_or(quote! {}, |msg| msg.emit())
+        StructMessage::new(
+            self.item,
+            msg_ty,
+            &self.generics,
+            &self.contract_type,
+            &self.error,
+            &self.custom,
+        )
+        .map_or(quote! {}, |msg| msg.emit())
     }
 
     fn emit_enum_msg(&self, msg_ty: MsgType) -> TokenStream {
-        ContractEnumMessage::new(self.item, msg_ty, &self.generics, &self.contract_type, &self.error, &self.custom)
+        ContractEnumMessage::new(self.item, msg_ty, &self.generics, &self.error, &self.custom)
             .emit()
     }
 

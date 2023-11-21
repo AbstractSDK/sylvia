@@ -1,4 +1,4 @@
-use proc_macro2::{Punct, TokenStream, Span};
+use proc_macro2::{Punct, Span, TokenStream};
 use proc_macro_error::emit_error;
 use quote::quote;
 use syn::fold::Fold;
@@ -86,16 +86,18 @@ pub enum MsgType {
 /// `#[msg(...)]` attribute for `interface` macro
 pub enum MsgAttr {
     Exec,
-    Query { resp_type: Option<Ident> },
-    Instantiate { 
-        name: Ident,
-        app_msg_name: Ident,
-        abstract_name: Path
+    Query {
+        resp_type: Option<Ident>,
     },
-    Migrate { 
+    Instantiate {
         name: Ident,
         app_msg_name: Ident,
-        abstract_name: Path 
+        abstract_name: Path,
+    },
+    Migrate {
+        name: Ident,
+        app_msg_name: Ident,
+        abstract_name: Path,
     },
     Reply,
 }
@@ -225,7 +227,6 @@ impl MsgType {
         }
     }
 
-
     pub fn as_accessor_name(&self, is_wrapper: bool) -> Option<Type> {
         match self {
             MsgType::Exec if is_wrapper => Some(parse_quote! { ContractExec }),
@@ -289,7 +290,11 @@ impl Parse for MsgAttr {
             let name = Ident::new("InstantiateMsg", Span::call_site());
             // This is the abstract base msg - This needs to depend on the app type
             let abstract_name: Path = MsgType::Instantiate.emit_abstract_name()?;
-            Ok(Self::Instantiate { name, app_msg_name, abstract_name })
+            Ok(Self::Instantiate {
+                name,
+                app_msg_name,
+                abstract_name,
+            })
         } else if ty == "migrate" {
             // This is the message that the client expects
             let app_msg_name = Ident::new("ImplMigrateMsg", content.span());
@@ -297,7 +302,11 @@ impl Parse for MsgAttr {
             let name = Ident::new("MigrateMsg", Span::call_site());
             // This is the abstract base msg - This needs to depend on the app type
             let abstract_name: Path = MsgType::Migrate.emit_abstract_name()?;
-            Ok(Self::Migrate { name, app_msg_name, abstract_name })
+            Ok(Self::Migrate {
+                name,
+                app_msg_name,
+                abstract_name,
+            })
         } else if ty == "reply" {
             Ok(Self::Reply)
         } else {
@@ -340,8 +349,6 @@ impl Parse for ContractTypeAttr {
         content.parse().map(|contract_type| Self { contract_type })
     }
 }
-
-
 
 #[derive(Debug)]
 pub struct Customs {
