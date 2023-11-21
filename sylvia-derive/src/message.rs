@@ -1065,7 +1065,7 @@ where
         let bracketed_generics = emit_bracketed_generics(used_generics);
 
         quote! {
-            #sylvia ::cw_std::from_slice::< #msg_name #bracketed_generics >(&msg)?
+            #sylvia ::cw_std::from_json::< #msg_name #bracketed_generics >(&msg)?
                 .dispatch(self, ( #values ))
                 .map_err(Into::into)
         }
