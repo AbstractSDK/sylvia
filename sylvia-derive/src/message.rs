@@ -146,6 +146,12 @@ impl<'a> StructMessage<'a> {
         let generics = emit_bracketed_generics(generics);
         let unused_generics = emit_bracketed_generics(unused_generics);
 
+        let base_name = match msg_ty{
+            MsgType::Instantiate => quote!{ base_instantiate },
+            MsgType::Migrate => quote!{ base_migrate },
+            _ => unimplemented!()
+        };
+
         #[cfg(not(tarpaulin_include))]
         {
             quote! {
@@ -175,11 +181,12 @@ impl<'a> StructMessage<'a> {
                         let Self { base, module} = self;
 
                         let #app_msg_name { #(#fields_names,)* } = module;
+                        let mut base_result_context = contract.#base_name(Into::into(ctx), base)?;
 
-                        let mut result_context = contract.#function_name(TryInto::try_into((ctx, base))?, #(#fields_names,)*)?;
+                        let mut result_context = contract.#function_name(base_result_context, #(#fields_names,)*)?;
                         // This is a general trait that can be implemented by App or Adapter
                         use ::abstract_app::better_sdk::execution_stack::ResponseGenerator;
-                        result_context.generate_response().map_err(Into::into)
+                        result_context.try_into().map_err(Into::into)
                     }
                 }
             }
@@ -457,6 +464,10 @@ impl<'a> ContractEnumMessage<'a> {
             MsgType::Query => quote! { #sylvia ::cw_schema::QueryResponses },
             _ => quote! {},
         };
+        let context_wrap = match msg_ty {
+            MsgType::Query => quote! {  },
+            _ => quote! { .and_then(TryInto::try_into)},
+        };
 
         let ep_name = msg_ty.emit_ep_name();
         let messages_fn_name = Ident::new(&format!("{}_messages", ep_name), contract.span());
@@ -477,7 +488,7 @@ impl<'a> ContractEnumMessage<'a> {
 
                         match self {
                             #(#match_arms,)*
-                        }
+                        } #context_wrap
                     }
 
                     #(#variants_constructors)*
