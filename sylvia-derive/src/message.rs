@@ -146,10 +146,10 @@ impl<'a> StructMessage<'a> {
         let generics = emit_bracketed_generics(generics);
         let unused_generics = emit_bracketed_generics(unused_generics);
 
-        let base_name = match msg_ty{
-            MsgType::Instantiate => quote!{ base_instantiate },
-            MsgType::Migrate => quote!{ base_migrate },
-            _ => unimplemented!()
+        let base_name = match msg_ty {
+            MsgType::Instantiate => quote! { base_instantiate },
+            MsgType::Migrate => quote! { base_migrate },
+            _ => unimplemented!(),
         };
 
         #[cfg(not(tarpaulin_include))]
@@ -181,12 +181,11 @@ impl<'a> StructMessage<'a> {
                         let Self { base, module} = self;
 
                         let #app_msg_name { #(#fields_names,)* } = module;
-                        let mut base_result_context = contract.#base_name(Into::into(ctx), base)?;
+                        let mut ctx = Into::into(ctx);
+                        contract.#base_name(&mut ctx, base)?;
 
-                        let mut result_context = contract.#function_name(base_result_context, #(#fields_names,)*)?;
-                        // This is a general trait that can be implemented by App or Adapter
-                        use ::abstract_app::better_sdk::execution_stack::ResponseGenerator;
-                        result_context.try_into().map_err(Into::into)
+                        contract.#function_name(&mut ctx, #(#fields_names,)*)?;
+                        ctx.try_into().map_err(Into::into)
                     }
                 }
             }
@@ -465,7 +464,7 @@ impl<'a> ContractEnumMessage<'a> {
             _ => quote! {},
         };
         let context_wrap = match msg_ty {
-            MsgType::Query => quote! {  },
+            MsgType::Query => quote! {},
             _ => quote! { .and_then(TryInto::try_into)},
         };
 
