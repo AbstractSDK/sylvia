@@ -33,9 +33,12 @@ pub struct StructMessage<'a> {
     unused_generics: Vec<&'a GenericParam>,
     wheres: Vec<&'a WherePredicate>,
     full_where: Option<&'a WhereClause>,
-    result: &'a ReturnType,
+    msg_ty: MsgType,
+    resp_type: Type,
+    error: &'a Type,
     msg_attr: MsgAttr,
     custom: &'a Custom<'a>,
+    contract_msg_types: &'a Type, // Saves the messages types around the actual type
 }
 
 impl<'a> StructMessage<'a> {
@@ -44,6 +47,8 @@ impl<'a> StructMessage<'a> {
         source: &'a ItemImpl,
         ty: MsgType,
         generics: &'a [&'a GenericParam],
+        contract_msg_types: &'a Type,
+        error: &'a Type,
         custom: &'a Custom,
     ) -> Option<StructMessage<'a>> {
         let mut generics_checker = CheckGenerics::new(generics);
@@ -54,6 +59,8 @@ impl<'a> StructMessage<'a> {
         let Some((method, msg_attr)) = parsed else {
             return None;
         };
+
+        let resp_type = custom.msg().unwrap_or_else(Custom::default_type);
 
         let function_name = &method.sig.ident;
         let fields = process_fields(&method.sig, &mut generics_checker);
@@ -68,9 +75,12 @@ impl<'a> StructMessage<'a> {
             unused_generics,
             wheres,
             full_where: source.generics.where_clause.as_ref(),
-            result: &method.sig.output,
             msg_attr,
+            msg_ty: ty,
+            resp_type,
+            error,
             custom,
+            contract_msg_types,
         })
     }
 
@@ -78,8 +88,16 @@ impl<'a> StructMessage<'a> {
         use MsgAttr::*;
 
         match &self.msg_attr {
-            Instantiate { name } => self.emit_struct(name),
-            Migrate { name } => self.emit_struct(name),
+            Instantiate {
+                name,
+                app_msg_name,
+                abstract_name,
+            } => self.emit_struct(name, app_msg_name, abstract_name),
+            Migrate {
+                name,
+                app_msg_name,
+                abstract_name,
+            } => self.emit_struct(name, app_msg_name, abstract_name),
             _ => {
                 emit_error!(Span::mixed_site(), "Invalid message type");
                 quote! {}
@@ -87,7 +105,12 @@ impl<'a> StructMessage<'a> {
         }
     }
 
-    pub fn emit_struct(&self, name: &Ident) -> TokenStream {
+    pub fn emit_struct(
+        &self,
+        name: &Ident,
+        app_msg_name: &Ident,
+        abstract_name: &Path,
+    ) -> TokenStream {
         let sylvia = crate_module();
 
         let Self {
@@ -98,14 +121,19 @@ impl<'a> StructMessage<'a> {
             unused_generics,
             wheres,
             full_where,
-            result,
             msg_attr,
+            msg_ty,
+            resp_type,
+            error,
             custom,
+            contract_msg_types,
         } = self;
 
         let ctx_type = msg_attr
             .msg_type()
             .emit_ctx_type(&custom.query_or_default());
+        let ret_type = msg_ty.emit_result_type(resp_type, error);
+
         let fields_names: Vec<_> = fields.iter().map(MsgField::name).collect();
         let parameters = fields.iter().map(|field| {
             let name = field.name;
@@ -118,26 +146,46 @@ impl<'a> StructMessage<'a> {
         let generics = emit_bracketed_generics(generics);
         let unused_generics = emit_bracketed_generics(unused_generics);
 
+        let base_name = match msg_ty {
+            MsgType::Instantiate => quote! { base_instantiate },
+            MsgType::Migrate => quote! { base_migrate },
+            _ => unimplemented!(),
+        };
+
         #[cfg(not(tarpaulin_include))]
         {
             quote! {
+                // This is the InstantiateMsg for the contract
                 #[allow(clippy::derive_partial_eq_without_eq)]
                 #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema)]
                 #[serde(rename_all="snake_case")]
                 pub struct #name #generics {
+                    pub base: <#contract_msg_types as ::abstract_app::better_sdk::sdk::SylviaAbstractContract> #abstract_name,
+                    pub module: #app_msg_name #generics
+                }
+
+                // This is the InstantiateMsg for the app
+                #[allow(clippy::derive_partial_eq_without_eq)]
+                #[derive(#sylvia ::serde::Serialize, #sylvia ::serde::Deserialize, Clone, Debug, PartialEq, #sylvia ::schemars::JsonSchema)]
+                #[serde(rename_all="snake_case")]
+                pub struct #app_msg_name #generics {
                     #(pub #fields,)*
                 }
 
                 impl #generics #name #generics #where_clause {
-                    pub fn new(#(#parameters,)*) -> Self {
-                        Self { #(#fields_names,)* }
-                    }
 
                     pub fn dispatch #unused_generics(self, contract: &#contract_type, ctx: #ctx_type)
-                        #result #full_where
+                       -> #ret_type #full_where
                     {
-                        let Self { #(#fields_names,)* } = self;
-                        contract.#function_name(Into::into(ctx), #(#fields_names,)*).map_err(Into::into)
+
+                        let Self { base, module} = self;
+
+                        let #app_msg_name { #(#fields_names,)* } = module;
+                        let mut ctx = Into::into(ctx);
+                        contract.#base_name(&mut ctx, base)?;
+
+                        contract.#function_name(&mut ctx, #(#fields_names,)*)?;
+                        ctx.try_into().map_err(Into::into)
                     }
                 }
             }
@@ -158,6 +206,7 @@ pub struct EnumMessage<'a> {
     msg_ty: MsgType,
     resp_type: Type,
     query_type: Type,
+    base_exec: &'a Option<Type>,
 }
 
 impl<'a> EnumMessage<'a> {
@@ -167,6 +216,7 @@ impl<'a> EnumMessage<'a> {
         ty: MsgType,
         generics: &'a [&'a GenericParam],
         custom: &'a Custom,
+        base_exec: &'a Option<Type>,
     ) -> Self {
         let trait_name = &source.ident;
 
@@ -223,6 +273,7 @@ impl<'a> EnumMessage<'a> {
             msg_ty: ty,
             resp_type,
             query_type,
+            base_exec,
         }
     }
 
@@ -241,6 +292,7 @@ impl<'a> EnumMessage<'a> {
             msg_ty,
             resp_type,
             query_type,
+            base_exec,
         } = self;
 
         let match_arms = variants.iter().map(|variant| variant.emit_dispatch_leg());
@@ -297,6 +349,39 @@ impl<'a> EnumMessage<'a> {
         let ep_name = msg_ty.emit_ep_name();
         let messages_fn_name = Ident::new(&format!("{}_messages", ep_name), name.span());
 
+        let is_func_empty = match_arms.clone().into_iter().count() == 0;
+
+        let ctx_creation = if !is_func_empty {
+            quote! {let mut ctx = Into::into(ctx);}
+        } else {
+            quote! {}
+        };
+
+        let context_wrap = match msg_ty {
+            MsgType::Query => quote! {},
+            _ => {
+                if !is_func_empty {
+                    quote! {?;ctx.try_into().map_err(Into::into)}
+                } else {
+                    quote! {; Ok(Response::new())}
+                }
+            }
+        };
+        let base_exec = match msg_ty {
+            MsgType::Exec => {
+                if let Some(base_exec) = base_exec {
+                    if !is_func_empty {
+                        quote! {contract.#base_exec(&mut ctx)?;}
+                    } else {
+                        quote! {}
+                    }
+                } else {
+                    quote! {}
+                }
+            }
+            _ => quote! {},
+        };
+
         #[cfg(not(tarpaulin_include))]
         let enum_declaration = match name.to_string().as_str() {
             "QueryMsg" => {
@@ -332,13 +417,15 @@ impl<'a> EnumMessage<'a> {
 
                 impl #generics #unique_enum_name #generics #where_clause {
                     pub fn dispatch<C: #trait_name #all_generics, #(#unused_generics,)*>(self, contract: &C, ctx: #ctx_type)
-                        -> #dispatch_type #full_where
+                    -> #dispatch_type #full_where
                     {
                         use #unique_enum_name::*;
 
+                        #ctx_creation
+                        #base_exec
                         match self {
                             #match_arms
-                        }
+                        }#context_wrap
                     }
                     #(#variants_constructors)*
                 }
@@ -415,6 +502,14 @@ impl<'a> ContractEnumMessage<'a> {
             MsgType::Query => quote! { #sylvia ::cw_schema::QueryResponses },
             _ => quote! {},
         };
+        let context_wrap = match msg_ty {
+            MsgType::Query => quote! {},
+            _ => quote! { ?; ctx.try_into().map_err(Into::into)},
+        };
+        let before_message = match msg_ty {
+            MsgType::Exec => quote! { contract.before_module_execute(&mut ctx)?;},
+            _ => quote! {},
+        };
 
         let ep_name = msg_ty.emit_ep_name();
         let messages_fn_name = Ident::new(&format!("{}_messages", ep_name), contract.span());
@@ -433,9 +528,11 @@ impl<'a> ContractEnumMessage<'a> {
                     pub fn dispatch #unused_generics (self, contract: &#contract, ctx: #ctx_type) -> #ret_type #where_clause {
                         use #enum_name::*;
 
+                        let mut ctx = Into::into(ctx);
+                        #before_message
                         match self {
                             #(#match_arms,)*
-                        }
+                        }#context_wrap
                     }
 
                     #(#variants_constructors)*
@@ -565,12 +662,12 @@ impl<'a> MsgVariant<'a> {
             Exec => quote! {
                 #name {
                     #(#fields,)*
-                } => contract.#function_name(Into::into(ctx), #(#args),*).map_err(Into::into)
+                } => contract.#function_name(&mut ctx, #(#args),*)
             },
             Query => quote! {
                 #name {
                     #(#fields,)*
-                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(Into::into(ctx), #(#args),*)?).map_err(Into::into)
+                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(&ctx, #(#args),*)?).map_err(Into::into)
             },
             Instantiate | Migrate | Reply | Sudo => {
                 emit_error!(name.span(), "Instantiation, Reply, Migrate and Sudo messages not supported on traits, they should be defined on contracts directly");

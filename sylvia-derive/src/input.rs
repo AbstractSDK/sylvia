@@ -16,7 +16,9 @@ use crate::message::{
     StructMessage,
 };
 use crate::multitest::{MultitestHelpers, TraitMultitestHelpers};
-use crate::parser::{ContractArgs, ContractErrorAttr, Custom, MsgType, OverrideEntryPoints};
+use crate::parser::{
+    ContractArgs, ContractErrorAttr, ContractTypeAttr, Custom, MsgType, OverrideEntryPoints,
+};
 use crate::remote::Remote;
 use crate::variant_descs::AsVariantDescs;
 
@@ -25,12 +27,14 @@ pub struct TraitInput<'a> {
     item: &'a ItemTrait,
     generics: Vec<&'a GenericParam>,
     custom: Custom<'a>,
+    base_exec: Option<Type>,
 }
 
 /// Preprocessed `contract` macro input for non-trait impl block
 pub struct ImplInput<'a> {
     attributes: &'a ContractArgs,
     error: Type,
+    contract_type: Type,
     item: &'a ItemImpl,
     generics: Vec<&'a GenericParam>,
     custom: Custom<'a>,
@@ -42,7 +46,25 @@ impl<'a> TraitInput<'a> {
     #[cfg(not(tarpaulin_include))]
     // This requires invalid implementation which would fail at compile time and making it impossible to test
     pub fn new(item: &'a ItemTrait) -> Self {
+        use crate::parser::BaseExecAttr;
+
         let generics = item.generics.params.iter().collect();
+
+        // Catch the base exec attribute
+        // This attribute is optional
+        let base_exec = item
+            .attrs
+            .iter()
+            .find(|attr| attr.path.is_ident("base_exec"))
+            .and_then(
+                |attr| match BaseExecAttr::parse.parse2(attr.tokens.clone()) {
+                    Ok(error) => Some(error.base_exec),
+                    Err(err) => {
+                        emit_error!(attr.span(), err);
+                        None
+                    }
+                },
+            );
 
         if !item
             .items
@@ -62,6 +84,7 @@ impl<'a> TraitInput<'a> {
             item,
             generics,
             custom,
+            base_exec,
         }
     }
 
@@ -123,7 +146,15 @@ impl<'a> TraitInput<'a> {
     }
 
     fn emit_msg(&self, name: &Ident, msg_ty: MsgType) -> TokenStream {
-        EnumMessage::new(name, self.item, msg_ty, &self.generics, &self.custom).emit()
+        EnumMessage::new(
+            name,
+            self.item,
+            msg_ty,
+            &self.generics,
+            &self.custom,
+            &self.base_exec,
+        )
+        .emit()
     }
 }
 
@@ -132,6 +163,22 @@ impl<'a> ImplInput<'a> {
         let sylvia = crate_module();
 
         let generics = item.generics.params.iter().collect();
+
+        // This allows to specify if the contract is an App or an adapter
+        let contract_type = item
+            .attrs
+            .iter()
+            .find(|attr| attr.path.is_ident("contract_type"))
+            .and_then(
+                |attr| match ContractTypeAttr::parse.parse2(attr.tokens.clone()) {
+                    Ok(error) => Some(error.contract_type),
+                    Err(err) => {
+                        emit_error!(attr.span(), err);
+                        None
+                    }
+                },
+            )
+            .unwrap_or_else(|| panic!("Contract Type has to be defined"));
 
         let error = item
             .attrs
@@ -157,6 +204,7 @@ impl<'a> ImplInput<'a> {
             item,
             generics,
             error,
+            contract_type,
             custom,
             override_entry_points,
             interfaces,
@@ -260,8 +308,15 @@ impl<'a> ImplInput<'a> {
     }
 
     fn emit_struct_msg(&self, msg_ty: MsgType) -> TokenStream {
-        StructMessage::new(self.item, msg_ty, &self.generics, &self.custom)
-            .map_or(quote! {}, |msg| msg.emit())
+        StructMessage::new(
+            self.item,
+            msg_ty,
+            &self.generics,
+            &self.contract_type,
+            &self.error,
+            &self.custom,
+        )
+        .map_or(quote! {}, |msg| msg.emit())
     }
 
     fn emit_enum_msg(&self, msg_ty: MsgType) -> TokenStream {
