@@ -329,6 +329,22 @@ impl Parse for ContractTypeAttr {
 }
 
 #[derive(Debug)]
+pub struct BaseExecAttr {
+    pub base_exec: Type,
+}
+
+#[cfg(not(tarpaulin_include))]
+// False negative. It is being called in closure
+impl Parse for BaseExecAttr {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let content;
+        parenthesized!(content in input);
+
+        content.parse().map(|base_exec| Self { base_exec })
+    }
+}
+
+#[derive(Debug)]
 pub struct Customs {
     pub has_msg: bool,
     pub has_query: bool,

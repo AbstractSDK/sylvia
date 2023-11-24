@@ -27,6 +27,7 @@ pub struct TraitInput<'a> {
     item: &'a ItemTrait,
     generics: Vec<&'a GenericParam>,
     custom: Custom<'a>,
+    base_exec: Option<Type>,
 }
 
 /// Preprocessed `contract` macro input for non-trait impl block
@@ -45,7 +46,25 @@ impl<'a> TraitInput<'a> {
     #[cfg(not(tarpaulin_include))]
     // This requires invalid implementation which would fail at compile time and making it impossible to test
     pub fn new(item: &'a ItemTrait) -> Self {
+        use crate::parser::BaseExecAttr;
+
         let generics = item.generics.params.iter().collect();
+
+        // Catch the base exec attribute
+        // This attribute is optional
+        let base_exec = item
+            .attrs
+            .iter()
+            .find(|attr| attr.path.is_ident("base_exec"))
+            .and_then(
+                |attr| match BaseExecAttr::parse.parse2(attr.tokens.clone()) {
+                    Ok(error) => Some(error.base_exec),
+                    Err(err) => {
+                        emit_error!(attr.span(), err);
+                        None
+                    }
+                },
+            );
 
         if !item
             .items
@@ -65,6 +84,7 @@ impl<'a> TraitInput<'a> {
             item,
             generics,
             custom,
+            base_exec,
         }
     }
 
@@ -126,7 +146,15 @@ impl<'a> TraitInput<'a> {
     }
 
     fn emit_msg(&self, name: &Ident, msg_ty: MsgType) -> TokenStream {
-        EnumMessage::new(name, self.item, msg_ty, &self.generics, &self.custom).emit()
+        EnumMessage::new(
+            name,
+            self.item,
+            msg_ty,
+            &self.generics,
+            &self.custom,
+            &self.base_exec,
+        )
+        .emit()
     }
 }
 

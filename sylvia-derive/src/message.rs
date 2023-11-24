@@ -206,6 +206,7 @@ pub struct EnumMessage<'a> {
     msg_ty: MsgType,
     resp_type: Type,
     query_type: Type,
+    base_exec: &'a Option<Type>,
 }
 
 impl<'a> EnumMessage<'a> {
@@ -215,6 +216,7 @@ impl<'a> EnumMessage<'a> {
         ty: MsgType,
         generics: &'a [&'a GenericParam],
         custom: &'a Custom,
+        base_exec: &'a Option<Type>,
     ) -> Self {
         let trait_name = &source.ident;
 
@@ -271,6 +273,7 @@ impl<'a> EnumMessage<'a> {
             msg_ty: ty,
             resp_type,
             query_type,
+            base_exec,
         }
     }
 
@@ -289,6 +292,7 @@ impl<'a> EnumMessage<'a> {
             msg_ty,
             resp_type,
             query_type,
+            base_exec,
         } = self;
 
         let match_arms = variants.iter().map(|variant| variant.emit_dispatch_leg());
@@ -345,6 +349,39 @@ impl<'a> EnumMessage<'a> {
         let ep_name = msg_ty.emit_ep_name();
         let messages_fn_name = Ident::new(&format!("{}_messages", ep_name), name.span());
 
+        let is_func_empty = match_arms.clone().into_iter().count() == 0;
+
+        let ctx_creation = if !is_func_empty {
+            quote! {let mut ctx = Into::into(ctx);}
+        } else {
+            quote! {}
+        };
+
+        let context_wrap = match msg_ty {
+            MsgType::Query => quote! {},
+            _ => {
+                if !is_func_empty {
+                    quote! {?;ctx.try_into().map_err(Into::into)}
+                } else {
+                    quote! {; Ok(Response::new())}
+                }
+            }
+        };
+        let base_exec = match msg_ty {
+            MsgType::Exec => {
+                if let Some(base_exec) = base_exec {
+                    if !is_func_empty {
+                        quote! {contract.#base_exec(&mut ctx)?;}
+                    } else {
+                        quote! {}
+                    }
+                } else {
+                    quote! {}
+                }
+            }
+            _ => quote! {},
+        };
+
         #[cfg(not(tarpaulin_include))]
         let enum_declaration = match name.to_string().as_str() {
             "QueryMsg" => {
@@ -384,9 +421,11 @@ impl<'a> EnumMessage<'a> {
                     {
                         use #unique_enum_name::*;
 
+                        #ctx_creation
+                        #base_exec
                         match self {
                             #match_arms
-                        }
+                        }#context_wrap
                     }
                     #(#variants_constructors)*
                 }
@@ -465,7 +504,11 @@ impl<'a> ContractEnumMessage<'a> {
         };
         let context_wrap = match msg_ty {
             MsgType::Query => quote! {},
-            _ => quote! { .and_then(TryInto::try_into)},
+            _ => quote! { ?; ctx.try_into().map_err(Into::into)},
+        };
+        let before_message = match msg_ty {
+            MsgType::Exec => quote! { contract.before_module_execute(&mut ctx)?;},
+            _ => quote! {},
         };
 
         let ep_name = msg_ty.emit_ep_name();
@@ -485,9 +528,11 @@ impl<'a> ContractEnumMessage<'a> {
                     pub fn dispatch #unused_generics (self, contract: &#contract, ctx: #ctx_type) -> #ret_type #where_clause {
                         use #enum_name::*;
 
+                        let mut ctx = Into::into(ctx);
+                        #before_message
                         match self {
                             #(#match_arms,)*
-                        } #context_wrap
+                        }#context_wrap
                     }
 
                     #(#variants_constructors)*
@@ -617,12 +662,12 @@ impl<'a> MsgVariant<'a> {
             Exec => quote! {
                 #name {
                     #(#fields,)*
-                } => contract.#function_name(Into::into(ctx), #(#args),*).map_err(Into::into)
+                } => contract.#function_name(&mut ctx, #(#args),*)
             },
             Query => quote! {
                 #name {
                     #(#fields,)*
-                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(Into::into(ctx), #(#args),*)?).map_err(Into::into)
+                } => #sylvia ::cw_std::to_json_binary(&contract.#function_name(&ctx, #(#args),*)?).map_err(Into::into)
             },
             Instantiate | Migrate | Reply | Sudo => {
                 emit_error!(name.span(), "Instantiation, Reply, Migrate and Sudo messages not supported on traits, they should be defined on contracts directly");
