@@ -196,12 +196,9 @@ impl MsgType {
 
     pub fn emit_abstract_name(&self) -> Result<Path> {
         match self {
-            MsgType::Exec => syn::parse_str("::BaseExecuteMsg"),
-            MsgType::Query => syn::parse_str("::BaseQueryMsg"),
             MsgType::Instantiate => syn::parse_str("::BaseInstantiateMsg"),
             MsgType::Migrate => syn::parse_str("::BaseMigrateMsg"),
-            MsgType::Reply => todo!(),
-            MsgType::Sudo => todo!(),
+            _ => unimplemented!(),
         }
     }
 
