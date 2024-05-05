@@ -136,7 +136,11 @@ impl Interfaces {
         let contract_enum_name = msg_ty.emit_msg_wrapper_name();
         println!("{:?}", msg_ty);
 
-        self.interfaces
+        // TODO: re-enable when we figure out how
+        // this just disables the auto-impl-into, which makes syntax nicer,
+        // but also breaks compilation....
+        // self.interfaces
+        vec![]
             .iter()
             .map(|interface| {
                 let ContractMessageAttr {
