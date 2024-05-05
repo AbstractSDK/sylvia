@@ -134,6 +134,7 @@ impl Interfaces {
     pub fn emit_impl_into_underlying(&self, msg_ty: &MsgType) -> TokenStream {
         let sylvia = crate_module();
         let contract_enum_name = msg_ty.emit_msg_wrapper_name();
+        println!("{:?}", msg_ty);
 
         self.interfaces
             .iter()
@@ -154,6 +155,12 @@ impl Interfaces {
                     quote! { <#module ::sv::Api #generics as #sylvia ::types::InterfaceApi> };
                 let type_name = msg_ty.as_accessor_name();
                 let whole_type_name = quote! {#interface_enum :: #type_name };
+
+                println!("whole_type_name: {}", whole_type_name);
+                println!("contract_enum_name: {}", contract_enum_name);
+                println!("variant: {}", variant);
+
+                println!("From<{:#}> for {:#}\n", whole_type_name, contract_enum_name);
 
                 quote! {
                     impl From<#whole_type_name> for #contract_enum_name {
