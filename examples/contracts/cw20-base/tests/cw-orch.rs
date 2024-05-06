@@ -1,26 +1,11 @@
-use cw20_base::contract::entry_points::*;
 use cw20_base::contract::sv::*;
 use cw20_base::contract::InstantiateMsgData;
+use cw20_base::orch::Cw20Base;
 use cw20_base::responses::Cw20Coin;
 use cw20_minting::responses::MinterResponse;
-use cw20_minting::sv::Cw20MintingExecMsg;
+use cw20_minting::sv::Cw20MintingExecMsgFns;
 use cw_orch::prelude::*;
 
-#[cw_orch::interface(InstantiateMsg, ContractExecMsg, ContractQueryMsg, Empty)]
-pub struct Cw20Base;
-
-impl<Chain> Uploadable for Cw20Base<Chain> {
-    /// Return the path to the wasm file corresponding to the contract
-    fn wasm(_chain: &ChainInfoOwned) -> WasmPath {
-        artifacts_dir_from_workspace!()
-            .find_wasm_path("cw20_base")
-            .unwrap()
-    }
-    /// Returns a CosmWasm contract wrapper
-    fn wrapper() -> Box<dyn MockContract<Empty>> {
-        Box::new(ContractWrapper::new_with_empty(execute, instantiate, query))
-    }
-}
 #[test]
 fn mock_interact() -> cw_orch::anyhow::Result<()> {
     let mock = MockBech32::new("mock");
@@ -62,14 +47,14 @@ fn mock_interact() -> cw_orch::anyhow::Result<()> {
     assert_eq!(balance.balance.u128(), 150_000u128);
 
     // This is what fails... let's see how to make that happen
-    // contract.mint(150_000u128.into(), mock.sender().to_string())?;
-    contract.execute(
-        &ContractExecMsg::Minting(Cw20MintingExecMsg::Mint {
-            recipient: mock.sender().to_string(),
-            amount: 150_000u128.into(),
-        }),
-        None,
-    )?;
+    contract.mint(150_000u128.into(), mock.sender().to_string())?;
+    // contract.execute(
+    //     &ContractExecMsg::Minting(Cw20MintingExecMsg::Mint {
+    //         recipient: mock.sender().to_string(),
+    //         amount: 150_000u128.into(),
+    //     }),
+    //     None,
+    // )?;
     let balance = contract.balance(mock.sender().to_string())?;
     assert_eq!(balance.balance.u128(), 300_000u128);
 
